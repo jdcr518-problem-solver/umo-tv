@@ -28,6 +28,7 @@ import type {
   SdpSignalMessage,
   IceCandidateSignalMessage,
   ChatSignalMessage,
+  ChatPayload,
   ErrorSignalMessage,
 } from '@shared/types.js';
 
@@ -65,10 +66,52 @@ export function App() {
   const lastPeerSessionIdRef = useRef<string | null>(null);
   const currentRoomIdRef = useRef<string | null>(null);
   const isInitiatorRef = useRef<boolean>(false);
+  const seenMessageIdsRef = useRef<Set<string>>(new Set());
 
   const showNotification = useCallback((msg: string) => {
     setNotification(msg);
     setTimeout(() => setNotification(null), 4000);
+  }, []);
+
+  // Centralized, idempotent incoming message handler (WebRTC DataChannel + RoomDO WebSocket fallback)
+  const handleIncomingChatMessage = useCallback((payload: ChatPayload) => {
+    // 1. Discard if message is from an old, stale, or mismatched room
+    if (!currentRoomIdRef.current || (payload.roomId && payload.roomId !== currentRoomIdRef.current)) {
+      console.log('[Chat] Discarded message from mismatched room:', payload.roomId);
+      return;
+    }
+
+    // 2. Discard self-echo
+    if (sessionRef.current && payload.senderSessionId === sessionRef.current.sessionId) {
+      return;
+    }
+
+    // 3. Deduplicate by messageId
+    if (seenMessageIdsRef.current.has(payload.messageId)) {
+      console.log('[Chat] Deduplicated message already seen:', payload.messageId);
+      return;
+    }
+
+    // 4. Record as seen
+    seenMessageIdsRef.current.add(payload.messageId);
+
+    // 5. Append new message to chat state
+    const newMsg: ChatMessageItem = {
+      id: payload.messageId,
+      roomId: payload.roomId,
+      sender: 'peer',
+      senderSessionId: payload.senderSessionId,
+      text: payload.text,
+      timestamp: payload.timestamp || Date.now(),
+      deliveryStatus: 'delivered',
+    };
+
+    setChatMessages((prev) => {
+      if (prev.some((m) => m.id === payload.messageId)) {
+        return prev;
+      }
+      return [...prev, newMsg];
+    });
   }, []);
 
   // Teardown WebRTC and Room signaling connection
@@ -100,6 +143,7 @@ export function App() {
     setCurrentRoomId('');
     setRemotePeerId('');
     setPartnerCountry('');
+    seenMessageIdsRef.current.clear();
     setChatMessages([]);
 
     if (remoteVideoRef.current) {
@@ -116,6 +160,8 @@ export function App() {
     isInitiatorRef.current = message.isInitiator;
     setRemotePeerId(message.peerSessionId);
     setPartnerCountry(message.peerCountry || '');
+    seenMessageIdsRef.current.clear();
+    setChatMessages([]);
 
     const session = sessionRef.current;
     if (!session) return;
@@ -153,17 +199,7 @@ export function App() {
             });
           }
         },
-        onChatMessage: (text) => {
-          setChatMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              sender: 'peer',
-              text,
-              timestamp: Date.now(),
-            },
-          ]);
-        },
+        onChatMessage: handleIncomingChatMessage,
         onConnectionTimeout: () => {
           matchmakingMachine.transitionTo('ERROR');
           showNotification('Direct connection timed out. Click Next to try another stranger.');
@@ -179,10 +215,14 @@ export function App() {
     webrtc.initialize(message.iceServers);
     webrtcRef.current = webrtc;
 
-    // Attach local camera & microphone tracks
+    // Attach local camera & microphone tracks (use filtered track if a filter is active)
     const localStream = cameraManager.getRawStream();
     if (localStream) {
-      webrtc.attachMediaTracks(localStream);
+      const activeVideoTrack =
+        filterManager.getActiveFilter() !== 'none'
+          ? filterManager.getActiveVideoTrack() || localStream.getVideoTracks()[0]
+          : localStream.getVideoTracks()[0];
+      webrtc.attachMediaTracks(localStream, activeVideoTrack);
     }
 
     // 2. Connect to RoomDO for signaling and control channel
@@ -244,15 +284,13 @@ export function App() {
           }
         } else if (signal.type === 'CHAT_MESSAGE') {
           const chatMsg = signal as ChatSignalMessage;
-          setChatMessages((prev) => [
-            ...prev,
-            {
-              id: chatMsg.messageId,
-              sender: 'peer',
-              text: chatMsg.text,
-              timestamp: chatMsg.timestamp,
-            },
-          ]);
+          handleIncomingChatMessage({
+            messageId: chatMsg.messageId,
+            roomId: chatMsg.roomId,
+            senderSessionId: chatMsg.sessionId,
+            text: chatMsg.text,
+            timestamp: chatMsg.timestamp,
+          });
         } else if (signal.type === 'PEER_LEFT') {
           showNotification('Stranger disconnected.');
           cleanupCall(false);
@@ -269,7 +307,7 @@ export function App() {
 
     roomClientRef.current = roomClient;
     await roomClient.connect(roomUrl);
-  }, [cleanupCall, showNotification]);
+  }, [cleanupCall, showNotification, handleIncomingChatMessage]);
 
   // Connect to MatchmakerDO queue
   const startMatchmaking = useCallback(async (excludePeerId?: string) => {
@@ -350,30 +388,54 @@ export function App() {
       setGuestId(session.sessionId);
     });
 
+    filterManager.setNotificationHandler((msg) => {
+      showNotification(msg);
+    });
+
     const unsubscribe = matchmakingMachine.subscribe((newState) => {
       setMatchState(newState);
     });
+
+    const statsInterval = setInterval(async () => {
+      if (webrtcRef.current) {
+        const stats = await webrtcRef.current.getStatsReport();
+        const filterDiag = filterManager.getDiagnostics();
+        if (filterDiag.activeFilter !== 'none') {
+          console.log('[UMO-Call-Diagnostics]', {
+            filter: filterDiag.activeFilter,
+            visibility: filterDiag.visibilityState,
+            fpsRendered: filterDiag.canvasFps,
+            detectionsPerSec: filterDiag.detectionsPerSec,
+            framesEncoded: stats.framesEncoded,
+            framesDecoded: stats.framesDecoded,
+          });
+        }
+      }
+    }, 3000);
 
     const handleBeforeUnload = () => {
       cleanupCall(true, 'stopped');
       if (matchmakerClientRef.current) {
         matchmakerClientRef.current.disconnect();
       }
+      filterManager.destroy();
       cameraManager.stopAllTracks();
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
+      clearInterval(statsInterval);
       unsubscribe();
       window.removeEventListener('beforeunload', handleBeforeUnload);
       cleanupCall(true, 'stopped');
       if (matchmakerClientRef.current) {
         matchmakerClientRef.current.disconnect();
       }
+      filterManager.destroy();
       cameraManager.stopAllTracks();
     };
-  }, [cleanupCall]);
+  }, [cleanupCall, showNotification]);
 
   const handleAgeConfirm = () => {
     safetyService.setAgeAcknowledged(true);
@@ -389,11 +451,17 @@ export function App() {
     }
 
     try {
-      if (!cameraManager.getRawStream()) {
+      let stream = cameraManager.getRawStream();
+      if (!stream) {
         matchmakingMachine.transitionTo('PREPARING_MEDIA');
         showNotification('Requesting camera & microphone access...');
-        const stream = await cameraManager.requestMedia();
-        if (localVideoRef.current) {
+        stream = await cameraManager.requestMedia();
+        if (activeFilter !== 'none') {
+          const filterRes = await filterManager.setFilter(activeFilter, stream);
+          if (localVideoRef.current && filterRes.filteredStream) {
+            localVideoRef.current.srcObject = filterRes.filteredStream;
+          }
+        } else if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
       }
@@ -451,40 +519,107 @@ export function App() {
   };
 
   // Filter Selection
-  const handleSelectFilter = (filterId: FilterId) => {
+  const handleSelectFilter = async (filterId: FilterId) => {
     setActiveFilter(filterId);
-    filterManager.setFilter(filterId);
-    showNotification(`Active filter: ${filterId}`);
+
+    // Request camera media if not yet acquired and user chose an AR filter
+    let rawStream = cameraManager.getRawStream();
+    if (!rawStream && filterId !== 'none') {
+      try {
+        rawStream = await cameraManager.requestMedia();
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = rawStream;
+        }
+      } catch (err) {
+        console.error('Failed to access camera for filter:', err);
+        showNotification('Camera access required for AR face filters.');
+        setActiveFilter('none');
+        return;
+      }
+    }
+
+    try {
+      const result = await filterManager.setFilter(filterId, rawStream);
+
+      // 1. Update local video preview (filtered canvas stream or raw camera)
+      if (localVideoRef.current && result.filteredStream) {
+        localVideoRef.current.srcObject = result.filteredStream;
+      }
+
+      // 2. Seamlessly update remote stranger's video track without renegotiation
+      if (webrtcRef.current && result.videoTrack && result.changedTrack) {
+        await webrtcRef.current.replaceVideoTrack(result.videoTrack);
+      }
+
+      const label =
+        filterId === 'dog-face'
+          ? 'Dog Ears & Nose'
+          : filterId === 'sunglasses'
+          ? 'Neon Sunglasses'
+          : 'Normal Camera';
+      showNotification(`Active Filter: ${label}`);
+    } catch (err) {
+      console.error('Failed to apply face filter:', err);
+      showNotification('Filter error. Reverting to normal camera.');
+      setActiveFilter('none');
+    }
   };
 
-  // Chat Message Send
-  const handleSendMessage = (text: string) => {
-    const newMsg: ChatMessageItem = {
-      id: crypto.randomUUID(),
-      sender: 'self',
-      text,
-      timestamp: Date.now(),
+  // Authoritative Chat Message Send: Primary (WebRTC DataChannel) + Fallback (RoomDO WebSocket)
+  const handleSendMessage = useCallback((text: string) => {
+    const trimmed = text.trim();
+    const currentRoomId = currentRoomIdRef.current;
+    const session = sessionRef.current;
+
+    // Reject empty messages or messages without active call/session
+    if (!trimmed || !currentRoomId || !session) return;
+
+    // Enforce message length limit (500 chars)
+    const boundedText = trimmed.slice(0, 500);
+    const messageId = crypto.randomUUID();
+    const now = Date.now();
+
+    const payload: ChatPayload = {
+      messageId,
+      roomId: currentRoomId,
+      senderSessionId: session.sessionId,
+      text: boundedText,
+      timestamp: now,
     };
 
+    // 1. Mark in seen set so echoes or retransmissions are ignored
+    seenMessageIdsRef.current.add(messageId);
+
+    // 2. Optimistic local UI state update
+    const newMsg: ChatMessageItem = {
+      id: messageId,
+      roomId: currentRoomId,
+      sender: 'self',
+      senderSessionId: session.sessionId,
+      text: boundedText,
+      timestamp: now,
+      deliveryStatus: 'sent',
+    };
     setChatMessages((prev) => [...prev, newMsg]);
 
-    // Send via WebRTC DataChannel if open
+    // 3. Primary transport: WebRTC DataChannel
+    let deliveredViaDataChannel = false;
     if (webrtcRef.current) {
-      webrtcRef.current.sendChatMessage(text);
+      deliveredViaDataChannel = webrtcRef.current.sendChatMessage(payload);
     }
 
-    // Also send via Room control channel
-    if (roomClientRef.current && roomClientRef.current.isConnected()) {
+    // 4. Fallback transport: RoomDO WebSocket (only if DataChannel not yet open or failed)
+    if (!deliveredViaDataChannel && roomClientRef.current && roomClientRef.current.isConnected()) {
       roomClientRef.current.send({
         type: 'CHAT_MESSAGE',
-        roomId: currentRoomIdRef.current || '',
-        messageId: newMsg.id,
-        sessionId: sessionRef.current?.sessionId || 'unknown',
-        text,
-        timestamp: newMsg.timestamp,
+        roomId: currentRoomId,
+        messageId,
+        sessionId: session.sessionId,
+        text: boundedText,
+        timestamp: now,
       });
     }
-  };
+  }, []);
 
   // Report & Block
   const handleReportAndBlock = async (reason: ReportReason, notes?: string) => {
@@ -527,6 +662,7 @@ export function App() {
           remotePeerSessionId={remotePeerId}
           onStartChat={handleStartChat}
           onOpenFilterDrawer={() => setIsFilterDrawerOpen(true)}
+          onSelectFilter={handleSelectFilter}
           onToggleMic={handleToggleMic}
           onToggleCamera={handleToggleCamera}
           onOpenReportModal={() => setIsReportModalOpen(true)}

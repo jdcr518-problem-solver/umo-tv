@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type React from 'react';
 import {
   Video,
@@ -11,6 +12,9 @@ import {
   Shield,
   Loader2,
   Flag,
+  Smile,
+  Dog,
+  Glasses,
 } from 'lucide-react';
 import type { MatchmakingState, FilterId } from '@shared/types.js';
 
@@ -24,6 +28,7 @@ interface VideoStageProps {
   remotePeerSessionId?: string;
   onStartChat: () => void;
   onOpenFilterDrawer: () => void;
+  onSelectFilter?: (id: FilterId) => void;
   onToggleMic?: () => void;
   onToggleCamera?: () => void;
   onOpenReportModal?: () => void;
@@ -39,10 +44,13 @@ export const VideoStage: React.FC<VideoStageProps> = ({
   remotePeerSessionId,
   onStartChat,
   onOpenFilterDrawer,
+  onSelectFilter,
   onToggleMic,
   onToggleCamera,
   onOpenReportModal,
 }) => {
+  const [isFilterPopoverOpen, setIsFilterPopoverOpen] = useState(false);
+
   const getFilterLabel = (id: FilterId) => {
     switch (id) {
       case 'dog-face':
@@ -52,6 +60,11 @@ export const VideoStage: React.FC<VideoStageProps> = ({
       default:
         return 'No Filter';
     }
+  };
+
+  const handleSelectAndClose = (id: FilterId) => {
+    onSelectFilter?.(id);
+    setIsFilterPopoverOpen(false);
   };
 
   return (
@@ -221,23 +234,79 @@ export const VideoStage: React.FC<VideoStageProps> = ({
           </div>
         )}
 
-        {/* Local Top Bar: Label & Filter Tag */}
+        {/* Local Top Bar: Label & Filter Tag & Popover */}
         <div className="absolute top-3 left-3 flex items-center gap-2 z-20">
           <span className="px-3 py-1 rounded-xl text-xs font-bold bg-slate-900/85 backdrop-blur-md text-slate-300 border border-slate-700/60 shadow">
             You
           </span>
 
-          <button
-            onClick={onOpenFilterDrawer}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
-              activeFilter !== 'none'
-                ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-sm'
-                : 'bg-slate-900/80 text-slate-300 border-slate-700/60 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-            <span>{getFilterLabel(activeFilter)}</span>
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => setIsFilterPopoverOpen((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                activeFilter !== 'none'
+                  ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 shadow-sm'
+                  : 'bg-slate-900/80 text-slate-300 border-slate-700/60 hover:text-white hover:bg-slate-800'
+              }`}
+              title="Click to choose AR face filter"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+              <span>{getFilterLabel(activeFilter)}</span>
+            </button>
+
+            {/* Quick Compact Popover */}
+            {isFilterPopoverOpen && (
+              <div className="absolute top-full left-0 mt-1.5 w-48 bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl p-1.5 z-30 flex flex-col gap-1 animate-fade-in">
+                <button
+                  onClick={() => handleSelectAndClose('none')}
+                  className={`flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors text-left cursor-pointer ${
+                    activeFilter === 'none'
+                      ? 'bg-purple-600/30 text-purple-200 font-semibold'
+                      : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                  }`}
+                >
+                  <Smile className="w-3.5 h-3.5 text-slate-400" />
+                  <span>No Filter</span>
+                </button>
+
+                <button
+                  onClick={() => handleSelectAndClose('dog-face')}
+                  className={`flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors text-left cursor-pointer ${
+                    activeFilter === 'dog-face'
+                      ? 'bg-purple-600/30 text-purple-200 font-semibold'
+                      : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                  }`}
+                >
+                  <Dog className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Dog Ears & Nose</span>
+                </button>
+
+                <button
+                  onClick={() => handleSelectAndClose('sunglasses')}
+                  className={`flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors text-left cursor-pointer ${
+                    activeFilter === 'sunglasses'
+                      ? 'bg-purple-600/30 text-purple-200 font-semibold'
+                      : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                  }`}
+                >
+                  <Glasses className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Neon Sunglasses</span>
+                </button>
+
+                <div className="border-t border-slate-800 mt-1 pt-1">
+                  <button
+                    onClick={() => {
+                      setIsFilterPopoverOpen(false);
+                      onOpenFilterDrawer();
+                    }}
+                    className="w-full text-center py-1 text-[10px] text-purple-400 hover:text-purple-300 font-medium cursor-pointer"
+                  >
+                    View Filter Details
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Local Top-Right: Quick Device Toggles (Mic & Camera) */}
@@ -271,9 +340,54 @@ export const VideoStage: React.FC<VideoStageProps> = ({
           )}
         </div>
 
+        {/* Compact AR Filter Dock on Local Video (Bottom Left) */}
+        <div className="absolute bottom-3 left-3 flex items-center gap-1 p-1 rounded-2xl bg-slate-900/90 backdrop-blur-md border border-slate-700/70 shadow-lg z-20">
+          <button
+            onClick={() => onSelectFilter?.('none')}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold transition-all cursor-pointer ${
+              activeFilter === 'none'
+                ? 'bg-slate-700 text-white shadow'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+            title="Normal raw camera stream (No Filter)"
+            aria-label="No Filter"
+          >
+            <Smile className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">None</span>
+          </button>
+
+          <button
+            onClick={() => onSelectFilter?.('dog-face')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-semibold transition-all cursor-pointer ${
+              activeFilter === 'dog-face'
+                ? 'bg-amber-600 text-white shadow shadow-amber-950/40'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+            title="Dog Ears & Nose AR Face Filter"
+            aria-label="Dog Filter"
+          >
+            <Dog className="w-3.5 h-3.5" />
+            <span>Dog</span>
+          </button>
+
+          <button
+            onClick={() => onSelectFilter?.('sunglasses')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-semibold transition-all cursor-pointer ${
+              activeFilter === 'sunglasses'
+                ? 'bg-cyan-600 text-white shadow shadow-cyan-950/40'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+            title="Neon Sunglasses AR Face Filter"
+            aria-label="Neon Sunglasses Filter"
+          >
+            <Glasses className="w-3.5 h-3.5" />
+            <span>Glasses</span>
+          </button>
+        </div>
+
         {/* Stream Transformation Guarantee Tag */}
         <div className="absolute bottom-3 right-3 text-[10px] text-slate-400 bg-slate-950/70 px-2.5 py-1 rounded-xl border border-slate-800">
-          P2P Stream Active
+          {activeFilter !== 'none' ? 'AR Filter Stream Active' : 'P2P Stream Active'}
         </div>
       </div>
     </div>

@@ -88,9 +88,12 @@ export function getGenderIcon(gender: GenderPreference): string {
 
 export interface ChatMessageItem {
   id: string;
+  roomId?: string;
   sender: 'self' | 'peer';
+  senderSessionId?: string;
   text: string;
   timestamp: number;
+  deliveryStatus?: 'sent' | 'delivered' | 'failed';
 }
 
 

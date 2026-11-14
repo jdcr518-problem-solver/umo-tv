@@ -10,6 +10,9 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test:protocol": "node scripts/test-backend.mjs",
+    "test:filters": "esbuild scripts/test-filters.mjs --bundle --platform=node --outfile=scripts/test-filters.bundle.mjs && node scripts/test-filters.bundle.mjs",
+    "test:chat": "node scripts/test-chat.mjs",
+    "test": "npm run test:protocol && npm run test:filters && npm run test:chat",
     "worker:dev": "wrangler dev",
     "worker:deploy": "wrangler deploy"
   },

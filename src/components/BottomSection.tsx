@@ -31,6 +31,12 @@ interface BottomSectionProps {
   onSendMessage: (text: string) => void;
 }
 
+function formatMessageTime(timestamp: number): string {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 export const BottomSection: React.FC<BottomSectionProps> = ({
   state,
   selectedCountry,
@@ -45,25 +51,53 @@ export const BottomSection: React.FC<BottomSectionProps> = ({
   onSendMessage,
 }) => {
   const [inputText, setInputText] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const isNearBottomRef = useRef(true);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const isConnected = state === 'CONNECTED';
   const isSearching = state === 'QUEUED' || state === 'MATCHING';
   const isConnecting = state === 'CONNECTING';
   const isIdle = state === 'IDLE';
 
-  // Auto-scroll chat messages to bottom
+  // Smart auto-scroll: only scrolls to bottom if user is already near bottom
+  const handleScroll = () => {
+    if (!chatScrollRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = chatScrollRef.current;
+    isNearBottomRef.current = scrollHeight - (scrollTop + clientHeight) < 50;
+  };
+
   useEffect(() => {
-    if (chatScrollRef.current) {
+    if (chatScrollRef.current && isNearBottomRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
     }
   }, [chatMessages]);
 
-  const handleSend = (e: React.FormEvent) => {
+  const handleSend = () => {
+    const trimmed = inputText.trim();
+    if (!trimmed || !isConnected || isSubmitting) return;
+
+    setIsSubmitting(true);
+    try {
+      onSendMessage(trimmed);
+      setInputText('');
+    } finally {
+      setIsSubmitting(false);
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim() || !isConnected) return;
-    onSendMessage(inputText.trim());
-    setInputText('');
+    handleSend();
   };
 
   // Start / Next button label and icon based on state
@@ -235,53 +269,81 @@ export const BottomSection: React.FC<BottomSectionProps> = ({
           )}
         </div>
 
-        {/* MIDDLE AREA: Received / Sent Chat Messages */}
+        {/* MIDDLE AREA: WhatsApp-style Scrollable Chat Messages */}
         <div
           ref={chatScrollRef}
-          className="flex-1 overflow-y-auto min-h-0 py-1 space-y-1 text-xs font-medium"
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto min-h-0 py-1.5 px-1 sm:px-1.5 space-y-2 bg-[#f8fafc]/60 rounded-[6px] my-1"
         >
           {chatMessages.length === 0 ? (
-            <div className="h-full flex items-center justify-center text-slate-400 text-[11px] italic">
+            <div className="h-full flex items-center justify-center text-slate-400 text-[11px] sm:text-xs italic select-none">
               {isConnected ? 'Say hello to your partner!' : 'Chat will be active once connected.'}
             </div>
           ) : (
-            chatMessages.map((msg) => (
-              <div key={msg.id} className="leading-tight break-words">
-                <span
-                  className={
-                    msg.sender === 'self'
-                      ? 'font-bold text-indigo-600'
-                      : 'font-bold text-emerald-600'
-                  }
-                >
-                  {msg.sender === 'self' ? 'You: ' : 'Stranger: '}
-                </span>
-                <span className="text-slate-800">{msg.text}</span>
-              </div>
-            ))
+            <>
+              {chatMessages.map((msg) => {
+                const isSelf = msg.sender === 'self';
+                return (
+                  <div
+                    key={msg.id}
+                    className={`flex w-full ${isSelf ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div
+                      className={`relative max-w-[85%] sm:max-w-[78%] px-2.5 py-1.5 shadow-xs text-xs leading-relaxed select-text ${
+                        isSelf
+                          ? 'bg-[#d9fdd3] text-slate-900 border border-[#bbf7d0]/60 rounded-2xl rounded-tr-xs'
+                          : 'bg-white text-slate-900 border border-slate-200/90 rounded-2xl rounded-tl-xs'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                        <span className="break-words whitespace-pre-wrap flex-1">{msg.text}</span>
+                        <span
+                          className={`text-[9px] sm:text-[10px] shrink-0 select-none ml-auto font-normal ${
+                            isSelf ? 'text-emerald-800/60' : 'text-slate-400'
+                          }`}
+                        >
+                          {formatMessageTime(msg.timestamp)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {state === 'DISCONNECTED' && (
+                <div className="flex justify-center my-1 select-none">
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500 border border-slate-200 shadow-xs">
+                    Stranger disconnected
+                  </span>
+                </div>
+              )}
+            </>
           )}
         </div>
 
-        {/* BOTTOM AREA: Full-Width Anchored Text Input */}
+        {/* BOTTOM AREA: WhatsApp-style Anchored Text Input */}
         <form
-          onSubmit={handleSend}
+          onSubmit={handleSubmit}
           className="w-full flex items-center gap-1.5 mt-auto pt-1.5 border-t border-slate-100"
         >
-          <input
-            type="text"
+          <textarea
+            ref={inputRef}
+            rows={1}
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={handleKeyDown}
             disabled={!isConnected}
+            maxLength={500}
             placeholder="Write a message..."
-            className="flex-1 h-8 sm:h-9 px-3 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-[6px] text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#24c36a] focus:bg-white disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed"
+            className="flex-1 resize-none py-1.5 px-3 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-[8px] text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-1.5 focus:ring-[#24c36a] focus:bg-white disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed leading-snug max-h-16"
           />
           <button
             type="submit"
-            disabled={!isConnected || !inputText.trim()}
-            className="h-8 sm:h-9 px-3 rounded-[6px] bg-[#24c36a] hover:bg-[#20b360] disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white flex items-center justify-center transition-colors cursor-pointer"
-            title="Send message"
+            disabled={!isConnected || !inputText.trim() || isSubmitting}
+            className="h-8 w-8 sm:h-9 sm:w-9 rounded-[8px] bg-[#24c36a] hover:bg-[#20b360] active:scale-95 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white flex items-center justify-center shrink-0 transition-all cursor-pointer shadow-xs"
+            title="Send message (Enter)"
           >
-            <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4 ml-0.5" />
           </button>
         </form>
       </div>

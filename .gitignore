@@ -25,3 +25,6 @@ dist-ssr
 
 .wrangler
 .dev.vars
+*.bundle.mjs
+public/wasm/
+public/models/

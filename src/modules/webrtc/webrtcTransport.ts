@@ -2,19 +2,30 @@ import type {
   SerializedIceServer,
   SerializedSessionDescription,
   SerializedIceCandidate,
+  ChatPayload,
 } from '@shared/types.js';
 
 export interface WebRTCTransportCallbacks {
   onRemoteTrack: (track: MediaStreamTrack, streams: readonly MediaStream[]) => void;
   onConnectionStateChange: (state: RTCPeerConnectionState) => void;
   onIceCandidate: (candidate: SerializedIceCandidate) => void;
-  onChatMessage?: (message: string) => void;
+  onChatMessage?: (payload: ChatPayload) => void;
   onConnectionTimeout?: () => void;
   onError?: (error: Error) => void;
 }
 
 export interface WebRTCTransportOptions {
   connectionTimeoutMs?: number;
+}
+
+export interface WebRTCStatsReport {
+  framesEncoded?: number;
+  framesDecoded?: number;
+  fpsSent?: number;
+  fpsReceived?: number;
+  bytesSent?: number;
+  bytesReceived?: number;
+  timestamp: number;
 }
 
 /**
@@ -123,11 +134,11 @@ export class WebRTCTransport {
     }
   }
 
-  attachMediaTracks(stream: MediaStream): void {
+  attachMediaTracks(stream: MediaStream, videoTrackOverride?: MediaStreamTrack | null): void {
     if (!this.peerConnection) return;
 
     const audioTrack = stream.getAudioTracks()[0];
-    const videoTrack = stream.getVideoTracks()[0];
+    const videoTrack = videoTrackOverride || stream.getVideoTracks()[0];
 
     if (audioTrack) {
       this.audioSender = this.peerConnection.addTrack(audioTrack, stream);
@@ -141,6 +152,38 @@ export class WebRTCTransport {
     if (this.videoSender) {
       await this.videoSender.replaceTrack(newTrack);
     }
+  }
+
+  /**
+   * Diagnostic statistics for outbound framesEncoded and inbound framesDecoded
+   */
+  async getStatsReport(): Promise<WebRTCStatsReport> {
+    const report: WebRTCStatsReport = { timestamp: Date.now() };
+    if (!this.peerConnection) return report;
+
+    try {
+      const stats = await this.peerConnection.getStats();
+      stats.forEach((entry) => {
+        if (entry.type === 'outbound-rtp' && entry.kind === 'video') {
+          report.framesEncoded = entry.framesEncoded;
+          report.fpsSent = entry.framesPerSecond;
+          report.bytesSent = entry.bytesSent;
+        }
+        if (entry.type === 'inbound-rtp' && entry.kind === 'video') {
+          report.framesDecoded = entry.framesDecoded;
+          report.fpsReceived = entry.framesPerSecond;
+          report.bytesReceived = entry.bytesReceived;
+        }
+      });
+    } catch (err) {
+      console.warn('[WebRTCTransport] getStats error:', err);
+    }
+
+    if (typeof window !== 'undefined') {
+      (window as unknown as { __UMO_WEBRTC_STATS__?: WebRTCStatsReport }).__UMO_WEBRTC_STATS__ = report;
+    }
+
+    return report;
   }
 
   createDataChannel(channelName = 'umo-chat'): void {
@@ -159,15 +202,32 @@ export class WebRTCTransport {
     if (!this.dataChannel) return;
     this.dataChannel.onmessage = (event) => {
       if (this.callbacks.onChatMessage) {
-        this.callbacks.onChatMessage(event.data as string);
+        try {
+          const payload = JSON.parse(event.data as string) as ChatPayload;
+          this.callbacks.onChatMessage(payload);
+        } catch {
+          // Backward compatibility fallback if peer sends unformatted string
+          this.callbacks.onChatMessage({
+            messageId: crypto.randomUUID(),
+            roomId: '',
+            senderSessionId: 'peer',
+            text: event.data as string,
+            timestamp: Date.now(),
+          });
+        }
       }
     };
   }
 
-  sendChatMessage(message: string): boolean {
+  sendChatMessage(payload: ChatPayload): boolean {
     if (this.dataChannel && this.dataChannel.readyState === 'open') {
-      this.dataChannel.send(message);
-      return true;
+      try {
+        this.dataChannel.send(JSON.stringify(payload));
+        return true;
+      } catch (err) {
+        console.warn('[WebRTCTransport] DataChannel send error', err);
+        return false;
+      }
     }
     return false;
   }

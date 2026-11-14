@@ -147,6 +147,14 @@ export interface PeerLeftMessage extends BaseSignalMessage {
   reason?: 'skipped' | 'disconnected' | 'blocked';
 }
 
+export interface ChatPayload {
+  messageId: string;
+  roomId: string;
+  senderSessionId: string;
+  text: string;
+  timestamp: number;
+}
+
 export interface ChatSignalMessage extends BaseSignalMessage {
   type: 'CHAT_MESSAGE';
   roomId: string;
